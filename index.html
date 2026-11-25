@@ -130,7 +130,7 @@ ul.plain { margin: 0; padding-left: 18px; } ul.plain li { margin: 4px 0; text-al
 <script>
 (() => {
 "use strict";
-const APP_VERSION = "web-v1";
+const APP_VERSION = "web-v2";
 const KEY = "trainingsapp.v1", UNDO = "trainingsapp.rueckgaengig";
 const WD = ["So", "Mo", "Di", "Mi", "Do", "Fr", "Sa"], WDL = ["Sonntag", "Montag", "Dienstag", "Mittwoch", "Donnerstag", "Freitag", "Samstag"], WDO = [1, 2, 3, 4, 5, 6, 0];
 const MON = ["Januar", "Februar", "März", "April", "Mai", "Juni", "Juli", "August", "September", "Oktober", "November", "Dezember"];
@@ -371,7 +371,7 @@ function backupBanner() {
 }
 function viewHeute() {
   const t = today(), d = new Date();
-  const hero = `<div class="hero ${coverUrl ? "img" : ""}" ${coverUrl ? `style="background-image:linear-gradient(to bottom, rgba(0,0,0,0) 45%, rgba(0,0,0,.55) 100%), url('${coverUrl}')"` : ""}><h1>${WDL[d.getDay()]}, ${d.getDate()}. ${MON[d.getMonth()]}</h1><span>${esc(db.plans.filter((p) => planActive(p, t)).map((p) => `${p.name} (${p.type})`).join(" · ") || "Kein laufender Plan")}</span></div>`;
+  const hero = `<div class="hero" ${coverUrl ? `style="background-image:linear-gradient(to bottom, rgba(0,0,0,0) 45%, rgba(0,0,0,.55) 100%), url('${coverUrl}')"` : ""}><h1>${WDL[d.getDay()]}, ${d.getDate()}. ${MON[d.getMonth()]}</h1><span>${esc(db.plans.filter((p) => planActive(p, t)).map((p) => `${p.name} (${p.type})`).join(" · ") || "Kein laufender Plan")}</span></div>`;
   if (!db.plans.length) return `${hero}<div class="empty stack" style="align-items:center"><span>Noch kein Trainingsplan angelegt.</span><button data-act="plan-new">Ersten Plan anlegen</button></div>`;
   const occ = occurrences(addDays(t, -21), addDays(t, 21));
   const now = occ.filter((o) => o.date === t);
@@ -434,6 +434,23 @@ function draftToLog(d) {
     cardio: d.cmode === "none" ? null : { mode: d.cmode, deviceId: d.deviceId, deviceName: dev?.name || "", metric: d.metric, incline: !!dev?.incline, progT: d.progT, progW: d.progW, time: pTime(d.cTime), kcal: d.cKcal, dist: d.cDist, pulse: d.cPulse },
     strength: d.sOn ? { exercises: d.exercises.map((e) => ({ ...e, name: exName(e), unit: exUnit(e) })), time: pTime(d.sTime), kcal: d.sKcal } : null, note: d.note };
 }
+const newPlanName = (d) => { const p = db.plans.find((x) => x.id === d.planId); return `${(p?.name || "Plan").replace(/ ab \d\d\.\d\d\.$/, "")} ab ${fShort(addDays(d.date, 1))}`; };
+/* Neuer Plan aus einem eingetragenen Training: Kopie des Plans, trainierter Tag mit den eingetragenen Werten; alter Plan endet am Trainingstag */
+function planFromLog(l, name) {
+  const p = db.plans.find((x) => x.id === l.planId); if (!p) return null;
+  const start = addDays(l.date, 1), np = clone(p);
+  np.id = uid(); np.name = (name || "").trim() || newPlanName(l); np.start = start; np.end = p.end && p.end >= start ? p.end : "";
+  const day = np.days.find((x) => x.id === l.dayId);
+  if (day) {
+    if (l.strength) day.exercises = l.strength.exercises.map((e) => ({ id: uid(), kind: e.kind, ref: e.ref, sets: clone(e.sets) }));
+    if (l.cardio) {
+      day.cardio = day.cardio || { deviceId: l.cardio.deviceId, metric: l.cardio.metric, training: newProg(20), warmup: newProg(5) };
+      day.cardio.deviceId = l.cardio.deviceId; day.cardio.metric = l.cardio.metric;
+      if (l.cardio.mode === "warmup") day.cardio.warmup = clone(l.cardio.progW); else day.cardio.training = clone(l.cardio.progT);
+    }
+  }
+  p.end = l.date; db.plans.push(np); return np;
+}
 function formLog() {
   const d = st.form.d, dev = cdev(d.deviceId);
   const mode = (v, l) => `<button class="chipbtn" aria-pressed="${d.cmode === v}" data-act="cmode" data-v="${v}">${l}</button>`;
@@ -446,6 +463,8 @@ function formLog() {
     <div class="panel stack"><label class="c"><input type="checkbox" data-p="sOn" data-re="1" ${d.sOn ? "checked" : ""}><h3>Geräte und Übungen</h3></label>
       ${d.sOn ? `${exEditor("exercises")}<div class="grid2">${fld("Zeit", inp("sTime", d.sTime, { ph: "Min." }))}${fld("Kalorien", inp("sKcal", d.sKcal, { t: "n", ph: "kcal" }))}</div>` : ""}</div>
     <div class="panel">${fld("Notiz", `<textarea data-p="note" rows="2">${esc(d.note)}</textarea>`)}</div>
+    ${d.planId && d.dayId && db.plans.some((p) => p.id === d.planId) ? `<div class="panel stack"><label class="c"><input type="checkbox" data-p="newPlan" data-re="1" ${d.newPlan ? "checked" : ""}><b>Änderungen als neuen Plan übernehmen</b></label>
+      ${d.newPlan ? `${fld("Name des neuen Plans", inp("newPlanName", d.newPlanName ?? newPlanName(d)))}<p class="hint">Gespeichert werden beide: dieses Training mit deinen Änderungen und ein neuer Plan ab dem ${fShort(addDays(d.date, 1))} Der bisherige Plan „${esc(db.plans.find((p) => p.id === d.planId).name)}“ endet am ${fShort(d.date)} und bleibt mit seinem Verlauf erhalten. Übernommen werden Geräte, Sätze, Wiederholungen und Gewichte dieses Trainingstags sowie die Cardio-Vorgabe${d.cmode === "warmup" ? " fürs Aufwärmen" : d.cmode === "training" ? " fürs Training" : ""}.</p>` : `<p class="hint">Ohne Häkchen gelten die Änderungen nur für dieses eine Training.</p>`}</div>` : ""}
     <div class="row"><button data-act="log-save">Speichern</button><button class="link" data-act="form-no">Abbrechen</button>${st.form.isNew ? "" : delBtn("log-del", d.id, "Eintrag löschen")}</div></div>`;
 }
 
@@ -576,18 +595,16 @@ function formMaster() {
 function viewHinweise() {
   const undo = localStorage.getItem(UNDO);
   return `<div class="stack"><div class="panel stack"><h2>Sicherung</h2>
-      <p class="just">Alle Daten liegen nur auf diesem Gerät. Die Sicherung ist eine Datei mit allen Plänen, Einträgen, Supplementen und dem Titelbild. Damit überträgst du den Stand vom iPad aufs iPhone und schützt dich vor Datenverlust.</p>
+      <p class="just">Alle Daten liegen nur auf diesem Gerät. Die Sicherung ist eine Datei mit allen Plänen, Einträgen und Supplementen. Damit überträgst du den Stand vom iPad aufs iPhone und schützt dich vor Datenverlust.</p>
       <div class="small muted">Letzte Sicherung: ${db.meta.lastBackup ? fDate(db.meta.lastBackup) : "noch keine"}</div>
       <div class="row"><button data-act="backup">Sicherung erstellen</button><label class="btn ghost" for="imp">Sicherung einspielen<input type="file" id="imp" accept=".json,application/json" hidden></label>${undo ? '<button class="link" data-act="undo">Einspielen rückgängig machen</button>' : ""}</div>
       <p class="hint">Das Einspielen ersetzt den gesamten Stand auf diesem Gerät durch den Inhalt der Datei. Der vorherige Stand bleibt für „Rückgängig“ erhalten, bis du erneut einspielst.</p></div>
-    <div class="panel stack"><h2>Titelbild</h2><p class="just">Ein eigenes Foto erscheint oben auf der Seite „Heute“.</p>
-      ${coverUrl ? `<img src="${coverUrl}" alt="Titelbild" style="width:100%;max-height:160px;object-fit:cover;border-radius:10px">` : ""}
-      <div class="row"><label class="btn ghost" for="cover-file">Foto wählen<input type="file" id="cover-file" accept="image/*" hidden></label>${coverUrl ? '<button class="link" data-act="cover-del">Titelbild entfernen</button>' : ""}</div></div>
     <div class="panel stack"><h2>So funktioniert die App</h2><ul class="plain">
       <li><b>Plan:</b> Ein Plan hat Beginn und Ende und besteht aus Trainingstagen. Für ein Ganzkörpertraining reicht ein Trainingstag mit mehreren Wochentagen, für ein Splittraining legst du je Schwerpunkt einen Trainingstag an.</li>
       <li><b>Eintragen:</b> Im Studio schaust du nur auf „Heute“. Zu Hause tippst du „Wie geplant erledigt“ oder änderst die Abweichungen. Nicht eingetragene Trainings der letzten drei Wochen bleiben auf „Heute“ stehen, bis du sie einträgst oder als ausgefallen markierst.</li>
       <li><b>Verschieben:</b> Ein einzelnes Training lässt sich auf einen anderen Tag legen, der Plan bleibt unverändert.</li>
       <li><b>Gewichte:</b> Je Gerät legst du unter „Geräte“ fest, ob die Gewichte in Pfund oder kg stehen und welche Zusatzgewichte es gibt. Die App rechnet daraus das Gesamtgewicht in kg.</li>
+      <li><b>Plan aus einem Training übernehmen:</b> Beim Eintragen mit Änderungen das Häkchen „Änderungen als neuen Plan übernehmen“ setzen. Dann wird das Training gespeichert, der bisherige Plan endet an diesem Tag, und ab dem Folgetag gilt ein neuer Plan mit den geänderten Werten.</li>
       <li><b>Kraft und Kraftausdauer:</b> Plan kopieren, Art umstellen, neue Daten setzen und in den Trainingstagen Gewichte und Wiederholungen anpassen.</li>
       <li><b>Eigene Einträge:</b> In jeder Auswahl gibt es „Eigener Eintrag“. Er wird dauerhaft übernommen.</li>
       <li><b>Zeit:</b> Minuten als Zahl oder so, wie die Apple Watch sie zeigt, zum Beispiel 0:42:30.</li></ul></div></div>`;
@@ -637,7 +654,7 @@ const ACT = {
   "log-new"(b) { const o = occByKey(b.dataset.key); if (!o) return; const l = logFromOcc(o), q = st.quick[o.key] || {}, d = logDraft(l); d.cTime = q.cTime || ""; d.cKcal = num(q.cKcal); d.sTime = q.sTime || ""; d.sKcal = num(q.sKcal); openForm("log", d, { isNew: true }); },
   "log-free"(b) { openForm("log", logDraft({ id: uid(), date: b.dataset.date, title: "Freies Training", cardio: null, strength: null }), { isNew: true }); },
   "log-edit"(b) { openForm("log", logDraft(db.logs.find((l) => l.id === b.dataset.id))); },
-  "log-save"() { const d = st.form.d; if (!d.date) return toast("Bitte ein Datum angeben."); resolveOwn(d); if (!d.metric) d.metric = "watt"; const l = draftToLog(d); if (l.cardio && l.cardio.time == null) l.cardio.time = progMin(logProg(l.cardio)); const i = db.logs.findIndex((x) => x.id === l.id); if (i >= 0) db.logs[i] = l; else db.logs.push(l); if (l.occ) { delete db.skips[l.occ]; delete st.quick[l.occ]; } save(); st.sel = l.date; closeForm(); toast("Training gespeichert"); },
+  "log-save"() { const d = st.form.d; if (!d.date) return toast("Bitte ein Datum angeben."); resolveOwn(d); if (!d.metric) d.metric = "watt"; const l = draftToLog(d); if (l.cardio && l.cardio.time == null) l.cardio.time = progMin(logProg(l.cardio)); const i = db.logs.findIndex((x) => x.id === l.id); if (i >= 0) db.logs[i] = l; else db.logs.push(l); if (l.occ) { delete db.skips[l.occ]; delete st.quick[l.occ]; } let np = null; if (d.newPlan) np = planFromLog(l, d.newPlanName); save(); st.sel = l.date; closeForm(); toast(np ? `Training gespeichert und neuer Plan „${np.name}“ ab ${fShort(np.start)} angelegt` : "Training gespeichert"); },
   "log-del"(b) { if (!sure("log-del", b.dataset.id)) return; db.logs = db.logs.filter((l) => l.id !== b.dataset.id); save(); closeForm(); toast("Eintrag gelöscht"); },
   cmode(b) { st.form.d.cmode = b.dataset.v; render(); },
   skip(b) { db.skips[b.dataset.key] = true; save(); render(); toast("Als ausgefallen markiert"); },
@@ -696,7 +713,7 @@ app.addEventListener("change", (e) => {
 /* ---------- Start ---------- */
 load();
 render();
-coverLoad().then(() => { if (coverUrl) render(); });
+idbOpen().then((d) => { idb = d; });
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) navigator.serviceWorker.register("sw.js").catch(() => {});
 try { navigator.storage?.persist?.(); } catch {}
 window.__ta = { get db() { return db; }, st };
